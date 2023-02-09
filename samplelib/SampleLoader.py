@@ -1,6 +1,7 @@
 import multiprocessing
 import operator
 import pickle
+import time
 import traceback
 from pathlib import Path
 
@@ -13,24 +14,6 @@ from DFLIMG import *
 from facelib import FaceType, LandmarksProcessor
 
 from .Sample import Sample, SampleType
-
-
-def load_face_sample(image_path):
-    dflimg = DFLIMG.load(Path(image_path))
-
-    if dflimg is None or not dflimg.has_data():
-        print(f"FaceSamplesLoader: {image_path} is not a dfl image file.")
-        data = None
-    else:
-        data = (dflimg.get_face_type(),
-                dflimg.get_shape(),
-                dflimg.get_landmarks(),
-                dflimg.get_seg_ie_polys(),
-                dflimg.get_xseg_mask_compressed(),
-                dflimg.get_eyebrows_expand_mod(),
-                dflimg.get_source_filename())
-
-    return image_path, data
 
 
 class SampleLoader:
@@ -88,11 +71,25 @@ class SampleLoader:
         return samples[sample_type]
 
     @staticmethod
-    def load_face_samples ( image_paths):
-        #result = FaceSamplesLoaderSubprocessor(image_paths).run()
-        print("Loading samples...")
+    def load_face_samples(image_paths):
+        io.progress_bar("Loading samples", len(image_paths))
+        result = []
+
         with multiprocessing.Pool() as pool:
-            result = pool.map(load_face_sample, image_paths)
+            futures = []
+            for path in image_paths:
+                futures.append(pool.apply_async(SampleLoader.load_face_sample, args=(path,)))
+
+            counter = 0
+            for future in futures:
+                result.append(future.get())
+                counter += 1
+                if counter == 7:
+                    io.progress_bar_inc(7)
+                    counter = 0
+            io.progress_bar_inc(counter)
+
+        io.progress_bar_close()
         sample_list = []
 
         for filename, data in result:
@@ -119,78 +116,26 @@ class SampleLoader:
         return sample_list
 
     @staticmethod
+    def load_face_sample(image_path):
+        dflimg = DFLIMG.load(Path(image_path))
+
+        if dflimg is None or not dflimg.has_data():
+            print(f"FaceSamplesLoader: {image_path} is not a dfl image file.")
+            data = None
+        else:
+            data = (dflimg.get_face_type(),
+                    dflimg.get_shape(),
+                    dflimg.get_landmarks(),
+                    dflimg.get_seg_ie_polys(),
+                    dflimg.get_xseg_mask_compressed(),
+                    dflimg.get_eyebrows_expand_mod(),
+                    dflimg.get_source_filename())
+
+        return image_path, data
+
+    @staticmethod
     def upgradeToFaceTemporalSortedSamples( samples ):
         new_s = [ (s, s.source_filename) for s in samples]
         new_s = sorted(new_s, key=operator.itemgetter(1))
 
         return [ s[0] for s in new_s]
-
-
-class FaceSamplesLoaderSubprocessor(Subprocessor):
-    #override
-    def __init__(self, image_paths ):
-        self.image_paths = image_paths
-        self.image_paths_len = len(image_paths)
-        self.idxs = [*range(self.image_paths_len)]
-        self.result = [None]*self.image_paths_len
-        super().__init__('FaceSamplesLoader', FaceSamplesLoaderSubprocessor.Cli, 60)
-
-    #override
-    def on_clients_initialized(self):
-        io.progress_bar ("Loading samples", len (self.image_paths))
-
-    #override
-    def on_clients_finalized(self):
-        io.progress_bar_close()
-
-    #override
-    def process_info_generator(self):
-        for i in range(min(multiprocessing.cpu_count(), 8) ):
-            yield 'CPU%d' % (i), {}, {}
-
-    #override
-    def get_data(self, host_dict):
-        if len (self.idxs) > 0:
-            idx = self.idxs.pop(0)
-            return idx, self.image_paths[idx]
-
-        return None
-
-    #override
-    def on_data_return (self, host_dict, data):
-        self.idxs.insert(0, data[0])
-
-    #override
-    def on_result (self, host_dict, data, result):
-        idx, dflimg = result
-        self.result[idx] = (self.image_paths[idx], dflimg)
-        io.progress_bar_inc(1)
-
-    #override
-    def get_result(self):
-        return self.result
-
-    class Cli(Subprocessor.Cli):
-        #override
-        def process_data(self, data):
-            idx, filename = data
-            dflimg = DFLIMG.load (Path(filename))
-
-            if dflimg is None or not dflimg.has_data():
-                self.log_err (f"FaceSamplesLoader: {filename} is not a dfl image file.")
-                data = None
-            else:
-                data = (dflimg.get_face_type(),
-                        dflimg.get_shape(),
-                        dflimg.get_landmarks(),
-                        dflimg.get_seg_ie_polys(),
-                        dflimg.get_xseg_mask_compressed(),
-                        dflimg.get_eyebrows_expand_mod(),
-                        dflimg.get_source_filename() )
-
-            return idx, data
-
-        #override
-        def get_data_name (self, data):
-            #return string identificator of your data
-            return data[1]
