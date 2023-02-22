@@ -1,3 +1,5 @@
+# 2023 - Modified by Dmitry Kalashnik.
+
 import multiprocessing
 import os
 import pickle
@@ -67,7 +69,7 @@ class InteractiveMergerSubprocessor(Subprocessor):
             self.predictor_input_shape = client_dict['predictor_input_shape']
             self.face_enhancer_func = client_dict['face_enhancer_func']
             self.xseg_256_extract_func = client_dict['xseg_256_extract_func']
-
+            self.imwrite_params = [cv2.IMWRITE_JPEG_QUALITY, 100]
 
             #transfer and set stdin in order to work code.interact in debug subprocess
             stdin_fd         = client_dict['stdin_fd']
@@ -96,8 +98,8 @@ class InteractiveMergerSubprocessor(Subprocessor):
                     h,w,c = img_bgr.shape
                     img_mask = np.zeros( (h,w,1), dtype=img_bgr.dtype)
                     
-                cv2_imwrite (pf.output_filepath, img_bgr)
-                cv2_imwrite (pf.output_mask_filepath, img_mask)
+                cv2_imwrite (pf.output_filepath, img_bgr, self.imwrite_params)
+                cv2_imwrite (pf.output_mask_filepath, img_mask, self.imwrite_params)
 
                 if pf.need_return_image:
                     pf.image = np.concatenate ([img_bgr, img_mask], axis=-1)
@@ -123,8 +125,8 @@ class InteractiveMergerSubprocessor(Subprocessor):
                                                         pf.frame_info,
                                                         pf.next_temporal_frame_infos )
 
-                cv2_imwrite (pf.output_filepath,      final_img[...,0:3] )
-                cv2_imwrite (pf.output_mask_filepath, final_img[...,3:4] )
+                cv2_imwrite (pf.output_filepath, final_img[...,0:3], self.imwrite_params)
+                cv2_imwrite (pf.output_mask_filepath, final_img[...,3:4], self.imwrite_params)
 
                 if pf.need_return_image:
                     pf.image = final_img
@@ -140,7 +142,7 @@ class InteractiveMergerSubprocessor(Subprocessor):
 
 
     #override
-    def __init__(self, is_interactive, merger_session_filepath, predictor_func, predictor_input_shape, face_enhancer_func, xseg_256_extract_func, merger_config, frames, frames_root_path, output_path, output_mask_path, model_iter, subprocess_count=4):
+    def __init__(self, is_interactive, merger_session_filepath, predictor_func, predictor_input_shape, face_enhancer_func, xseg_256_extract_func, merger_config, frames, frames_root_path, output_path, output_mask_path, output_format, model_iter, subprocess_count=4):
         if len (frames) == 0:
             raise ValueError ("len (frames) == 0")
 
@@ -244,8 +246,8 @@ class InteractiveMergerSubprocessor(Subprocessor):
         for i in range( len(self.frames) ):
             frame = self.frames[i]
             frame.idx = i
-            frame.output_filepath      = self.output_path      / ( frame.frame_info.filepath.stem + '.png' )
-            frame.output_mask_filepath = self.output_mask_path / ( frame.frame_info.filepath.stem + '.png' )
+            frame.output_filepath      = self.output_path      / ( frame.frame_info.filepath.stem + output_format )
+            frame.output_mask_filepath = self.output_mask_path / ( frame.frame_info.filepath.stem + output_format )
 
             if not frame.output_filepath.exists() or \
                not frame.output_mask_filepath.exists():

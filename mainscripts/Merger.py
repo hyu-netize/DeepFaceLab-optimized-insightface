@@ -1,4 +1,6 @@
-﻿import math
+﻿# 2023 - Modified by Dmitry Kalashnik.
+
+import math
 import multiprocessing
 import traceback
 from pathlib import Path
@@ -73,6 +75,9 @@ def main (model_class_name=None,
 
         if not is_interactive:
             cfg.ask_settings()
+
+        is_max_quality_format = io.input_bool ("Save in PNG format?", False, help_message="The PNG format is for lossless picture saving. Turn it on if you believe in the magical power of PNG.")
+        output_format = '.png' if is_max_quality_format else '.jpg'
             
         subprocess_count = io.input_int("Number of workers?", max(8, multiprocessing.cpu_count()), 
                                         valid_range=[1, multiprocessing.cpu_count()], help_message="Specify the number of threads to process. A low value may affect performance. A high value may result in memory error. The value may not be greater than CPU cores." )
@@ -205,6 +210,7 @@ def main (model_class_name=None,
                             frames_root_path       = input_path,
                             output_path            = output_path,
                             output_mask_path       = output_mask_path,
+                            output_format          = output_format,
                             model_iter             = model.get_iter(),
                             subprocess_count       = subprocess_count,
                         ).run()
