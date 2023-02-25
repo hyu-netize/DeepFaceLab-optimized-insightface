@@ -78,9 +78,9 @@ def main (model_class_name=None,
 
         is_max_quality_format = io.input_bool ("Save in PNG format?", False, help_message="The PNG format is for lossless picture saving. Turn it on if you believe in the magical power of PNG.")
         output_format = '.png' if is_max_quality_format else '.jpg'
-            
-        subprocess_count = io.input_int("Number of workers?", max(8, multiprocessing.cpu_count()), 
-                                        valid_range=[1, multiprocessing.cpu_count()], help_message="Specify the number of threads to process. A low value may affect performance. A high value may result in memory error. The value may not be greater than CPU cores." )
+
+        subprocess_count = io.input_int("Number of workers?", multiprocessing.cpu_count() + 1,
+                                        valid_range=[1, int(multiprocessing.cpu_count() * 1.25)], help_message="Specify the number of threads to process. A low value may affect performance. A high value may result in memory error. The value may not be greater than number of CPU cores * 1.25." )
 
         input_path_image_paths = pathex.get_image_paths(input_path)
 
