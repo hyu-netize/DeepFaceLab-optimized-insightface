@@ -1,3 +1,5 @@
+# 2023 - Modified by Dmitry Kalashnik.
+
 if __name__ == "__main__":
     # Fix for linux
     import multiprocessing
@@ -236,7 +238,8 @@ if __name__ == "__main__":
                                      fps      = arguments.fps,
                                      bitrate  = arguments.bitrate,
                                      include_audio = arguments.include_audio,
-                                     lossless = arguments.lossless)
+                                     lossless = arguments.lossless,
+                                     codec = arguments.codec)
 
     p = videoed_parser.add_parser( "video-from-sequence", help="Make video from image sequence.")
     p.add_argument('--input-dir', required=True, action=fixPathAction, dest="input_dir", help="Input file to be processed. Specify .*-extension to find first file.")
@@ -247,6 +250,7 @@ if __name__ == "__main__":
     p.add_argument('--bitrate', type=int, dest="bitrate", default=None, help="Bitrate of output file in Megabits.")
     p.add_argument('--include-audio', action="store_true", dest="include_audio", default=False, help="Include audio from reference file.")
     p.add_argument('--lossless', action="store_true", dest="lossless", default=False, help="PNG codec.")
+    p.add_argument('--codec', dest="codec", default=None, help="A codec of an output file.")
 
     p.set_defaults(func=process_videoed_video_from_sequence)
 

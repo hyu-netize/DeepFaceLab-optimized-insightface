@@ -1,3 +1,5 @@
+# 2023 - Modified by Dmitry Kalashnik.
+
 import subprocess
 import numpy as np
 import ffmpeg
@@ -165,7 +167,7 @@ def denoise_image_sequence( input_dir, ext=None, factor=None ):
             io.log_error ('fail to rename %s' % (src.name) )
             return
 
-def video_from_sequence( input_dir, output_file, reference_file=None, ext=None, fps=None, bitrate=None, include_audio=False, lossless=None ):
+def video_from_sequence( input_dir, output_file, reference_file=None, ext=None, fps=None, bitrate=None, include_audio=False, lossless=None, codec=None):
     input_path = Path(input_dir)
     output_file_path = Path(output_file)
     reference_file_path = Path(reference_file) if reference_file is not None else None
@@ -185,6 +187,18 @@ def video_from_sequence( input_dir, output_file, reference_file=None, ext=None, 
 
     if lossless is None:
         lossless = io.input_bool ("Use lossless codec", False)
+
+    if codec is None:
+        io.log_info("Choose a video encoder:")
+        io.log_info("[0] libx264    (H.264 CPU)")
+        io.log_info("[1] h264_nvenc (H.264 NVIDIA GPU)")
+        io.log_info("[2] h264_amf   (H.264 AMD GPU)")
+        io.log_info("")
+        io.log_info("[3] libx265    (H.265 CPU)")
+        io.log_info("[4] hevc_nvenc (H.265 NVIDIA GPU)")
+        io.log_info("[5] hevc_amf   (H.265 AMD GPU)")
+        codecs = {0: 'libx264', 1: 'h264_nvenc', 2: 'h264_amf', 3: 'libx265', 4: 'hevc_nvenc', 5: 'hevc_amf'}
+        codec = codecs[io.input_int("Input", 0, [0, 5], help_message="Use libx264 if you're not sure. Also, GPU encoders work much faster but require a higher bitrate for the same quality.")]
 
     video_id = None
     audio_id = None
@@ -237,14 +251,15 @@ def video_from_sequence( input_dir, output_file, reference_file=None, ext=None, 
     output_kwargs = {}
 
     if lossless:
-        output_kwargs.update ({"c:v": "libx264",
+        output_kwargs.update ({"c:v": codec,
                                "crf": "0",
                                "pix_fmt": "yuv420p",
                               })
     else:
-        output_kwargs.update ({"c:v": "libx264",
+        output_kwargs.update ({"c:v": codec,
                                "b:v": "%dM" %(bitrate),
                                "pix_fmt": "yuv420p",
+                               "x264opts": "opencl",
                               })
 
     if include_audio and ref_in_a is not None:
