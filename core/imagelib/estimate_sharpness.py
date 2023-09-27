@@ -26,12 +26,19 @@ N. D. Narvekar and L. J. Karam, "A No Reference Perceptual Quality Metric based 
  DISCLAIMER:
  This software is provided by the copyright holders and contributors "as is" and any express or implied warranties, including, but not limited to, the implied warranties of merchantability and fitness for a particular purpose are disclaimed. In no event shall the Arizona Board of Regents, Arizona State University, IVU Lab members, authors or contributors be liable for any direct, indirect, incidental, special, exemplary, or consequential damages (including, but not limited to, procurement of substitute
 goods or services; loss of use, data, or profits; or business interruption) however caused and on any theory of liability, whether in contract, strict liability, or tort (including negligence or otherwise) arising in any way out of the use of this software, even if advised of the possibility of such damage.
+
+2023 - Modified by Dmitry Kalashnik.
 """
 
 import numpy as np
 import cv2
 from math import atan2, pi
+from numba import jit
+from numba.core.errors import NumbaWarning, NumbaDeprecationWarning
+import warnings
 
+warnings.simplefilter('ignore', category=NumbaWarning)
+warnings.simplefilter('ignore', category=NumbaDeprecationWarning)
 
 def sobel(image):
     # type: (numpy.ndarray) -> numpy.ndarray
@@ -113,6 +120,7 @@ def compute(image):
     return _calculate_sharpness_metric(image, canny_edges, marziliano_widths)
 
 
+@jit()
 def marziliano_method(edges, image):
     # type: (numpy.ndarray, numpy.ndarray) -> numpy.ndarray
     """

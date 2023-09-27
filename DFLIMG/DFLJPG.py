@@ -1,9 +1,12 @@
+# 2023 - Modified by Dmitry Kalashnik.
+
 import pickle
 import struct
 import traceback
 
 import cv2
 import numpy as np
+from numba import njit
 
 from core import imagelib
 from core.cv2ex import *
@@ -107,12 +110,9 @@ class DFLJPG(object):
                     data_counter += chunk_size
 
                 if chunk_name == "SOS":
-                    c = data_counter
-                    while c < inst_length and (data[c] != 0xFF or data[c+1] != 0xD9):
-                        c += 1
-
-                    chunk_ex_data = data[data_counter:c]
-                    data_counter = c
+                    end = search_end(data_counter, data, inst_length)
+                    chunk_ex_data = data[data_counter:end]
+                    data_counter = end
 
                 chunks.append ({'name' : chunk_name,
                                 'm_h' : chunk_m_h,
@@ -322,3 +322,12 @@ class DFLJPG(object):
             raise Exception("set_xseg_mask: unable to generate image data for set_xseg_mask")
 
         self.dfl_dict['xseg_mask'] = buf
+
+
+@njit()
+def search_end(c, data, inst_length):
+    while c < inst_length:
+        if data[c] == 0xFF and data[c + 1] == 0xD9:
+            return c
+        c += 1
+    return c

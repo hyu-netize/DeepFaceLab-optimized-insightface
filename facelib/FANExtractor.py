@@ -1,13 +1,22 @@
+# 2023 - Modified by Dmitry Kalashnik.
+
 import os
 import traceback
 from pathlib import Path
 
 import cv2
 import numpy as np
+from numba import njit
 from numpy import linalg as npla
 
 from facelib import FaceType, LandmarksProcessor
 from core.leras import nn
+
+
+@njit(parallel=True)
+def linalg_inv(a):
+    return np.linalg.inv(a)
+
 
 """
 ported from https://github.com/1adrianb/face-alignment
@@ -237,7 +246,7 @@ class FANExtractor(object):
         m[1,1] = resolution / h
         m[0,2] = resolution * ( -center[0] / h + 0.5 )
         m[1,2] = resolution * ( -center[1] / h + 0.5 )
-        m = np.linalg.inv(m)
+        m = linalg_inv(m)
         return np.matmul (m, pt)[0:2]
 
     def crop(self, image, center, scale, resolution=256.0):
