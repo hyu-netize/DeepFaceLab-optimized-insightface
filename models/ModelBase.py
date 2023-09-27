@@ -1,3 +1,5 @@
+# 2023 - Modified by Dmitry Kalashnik.
+
 import colorsys
 import inspect
 import json
@@ -8,6 +10,7 @@ import pickle
 import shutil
 import tempfile
 import time
+from multiprocessing.pool import ThreadPool
 from pathlib import Path
 
 import cv2
@@ -45,6 +48,8 @@ class ModelBase(object):
         self.pretrained_model_path = pretrained_model_path
         self.no_preview = no_preview
         self.debug = debug
+        self.thread_pool = ThreadPool(processes=1)
+        self.future_sample = None
 
         self.model_class_name = model_class_name = Path(inspect.getmodule(self).__file__).parent.name.rsplit("_", 1)[1]
 
@@ -454,15 +459,22 @@ class ModelBase(object):
 
         return imagelib.equalize_and_stack_square (images)
 
-    def generate_next_samples(self):
+    def collect_samples(self):
         sample = []
         for generator in self.generator_list:
             if generator.is_initialized():
                 sample.append ( generator.generate_next() )
             else:
                 sample.append ( [] )
-        self.last_sample = sample
         return sample
+
+    def generate_next_samples(self):
+        if self.future_sample is None:
+            self.future_sample = self.thread_pool.apply_async(self.collect_samples)
+
+        self.last_sample = self.future_sample.get()
+        self.future_sample = self.thread_pool.apply_async(self.collect_samples)
+        return self.last_sample
 
     #overridable
     def should_save_preview_history(self):
