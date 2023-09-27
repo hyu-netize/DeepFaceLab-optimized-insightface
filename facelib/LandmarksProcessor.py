@@ -1,3 +1,5 @@
+# 2023 - Modified by Dmitry Kalashnik.
+
 import colorsys
 import math
 from enum import IntEnum
@@ -715,7 +717,7 @@ def draw_landmarks (image, image_landmarks, color=(0,255,0), draw_circles=True, 
 
     if transparent_mask:
         mask = get_image_hull_mask (image.shape, image_landmarks)
-        image[...] = ( image * (1-mask) + image * mask / 2 )[...]
+        image[...] = (image * (1 - mask / 2))[...]
 
 def draw_rect_landmarks (image, rect, image_landmarks, face_type, face_size=256, transparent_mask=False, landmarks_color=(0,255,0)):
     draw_landmarks(image, image_landmarks, color=landmarks_color, transparent_mask=transparent_mask)
