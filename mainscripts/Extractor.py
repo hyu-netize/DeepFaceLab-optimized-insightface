@@ -1,4 +1,6 @@
-﻿import traceback
+﻿# 2023 - Modified by Dmitry Kalashnik.
+
+import traceback
 import math
 import multiprocessing
 import operator
@@ -6,6 +8,7 @@ import os
 import shutil
 import sys
 import time
+from multiprocessing.pool import ThreadPool
 from pathlib import Path
 
 import cv2
@@ -704,6 +707,77 @@ class DeletedFilesSearcherSubprocessor(Subprocessor):
     def get_result(self):
         return self.result
 
+
+class ExtractThreadedProcessor(object):
+
+    def process_data(self, data):
+        filepath = data.filepath
+        image = cv2_imread(filepath)
+        if image is None:
+            io.log_err(f'Failed to open {filepath}, reason: cv2_imread() fail.')
+            return data
+        image = imagelib.normalize_channels(image, 3)
+        image = imagelib.cut_odd_image(image)
+
+        data = ExtractSubprocessor.Cli.rects_stage(data=data,
+                                                   image=image,
+                                                   max_faces_from_image=self.max_faces_from_image,
+                                                   rects_extractor=self.rects_extractor)
+
+        data = ExtractSubprocessor.Cli.landmarks_stage(data=data,
+                                                       image=image,
+                                                       landmarks_extractor=self.landmarks_extractor,
+                                                       rects_extractor=self.rects_extractor)
+
+        data = ExtractSubprocessor.Cli.final_stage(data=data,
+                                                   image=image,
+                                                   face_type=self.face_type,
+                                                   image_size=self.image_size,
+                                                   jpeg_quality=self.jpeg_quality,
+                                                   output_debug_path=self.output_debug_path,
+                                                   final_output_path=self.final_output_path)
+        io.progress_bar_inc(1)
+        return data
+
+    def __init__(self, input_data, type, image_size=None, jpeg_quality=None, face_type=None, output_debug_path=None, max_faces_from_image=0, final_output_path=None, device_config=None):
+        if type != 'all':
+            raise Exception('Invalid call')
+
+        self.input_data = input_data
+
+        self.type = type
+        self.image_size = image_size
+        self.jpeg_quality = jpeg_quality
+        self.face_type = face_type
+        self.output_debug_path = output_debug_path
+        self.final_output_path = final_output_path
+        self.max_faces_from_image = max_faces_from_image
+        self.thread_pool = ThreadPool(processes=int(multiprocessing.cpu_count() * 1.5))
+
+        self.devices = ExtractSubprocessor.get_devices_for_config(self.type, device_config)
+
+        cpu_mode = self.devices[0][1] == 'CPU'
+        if cpu_mode:
+            place_model_on_cpu = True
+            io.log_info("Running on CPU")
+        else:
+            device_memory_gb = self.devices[0][3]
+            place_model_on_cpu = device_memory_gb < 4
+            io.log_info(f"Running on {self.devices[0][2]}")
+
+        nn.initialize (device_config)
+
+        self.rects_extractor = facelib.S3FDExtractor(place_model_on_cpu=place_model_on_cpu)
+        self.landmarks_extractor = facelib.FANExtractor(landmarks_3D=self.face_type >= FaceType.HEAD,
+                                                        place_model_on_cpu=place_model_on_cpu)
+
+    def run(self):
+        io.progress_bar(None, len(self.input_data))
+        result = self.thread_pool.map(self.process_data, self.input_data)
+        io.progress_bar_close()
+        return result
+
+
 def main(detector=None,
          input_path=None,
          output_path=None,
@@ -816,15 +890,15 @@ def main(detector=None,
 
         else:
             io.log_info ('Extracting faces...')
-            data = ExtractSubprocessor ([ ExtractSubprocessor.Data(Path(filename)) for filename in input_image_paths ],
-                                         'all',
-                                         image_size,
-                                         jpeg_quality,
-                                         face_type,
-                                         output_debug_path if output_debug else None,
-                                         max_faces_from_image=max_faces_from_image,
-                                         final_output_path=output_path,
-                                         device_config=device_config).run()
+            data = ExtractThreadedProcessor([ ExtractSubprocessor.Data(Path(filename)) for filename in input_image_paths ],
+                                            'all',
+                                            image_size,
+                                            jpeg_quality,
+                                            face_type,
+                                            output_debug_path if output_debug else None,
+                                            max_faces_from_image=max_faces_from_image,
+                                            final_output_path=output_path,
+                                            device_config=device_config).run()
 
         faces_detected += sum([d.faces_detected for d in data])
 

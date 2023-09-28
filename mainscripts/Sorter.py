@@ -1,4 +1,6 @@
-﻿import math
+﻿# 2023 - Modified by Dmitry Kalashnik.
+
+import math
 import multiprocessing
 import operator
 import os
@@ -15,213 +17,142 @@ from core import imagelib, mathlib, pathex
 from core.cv2ex import *
 from core.imagelib import estimate_sharpness
 from core.interact import interact as io
-from core.joblib import Subprocessor
+from core.joblib import Subprocessor, MultiprocessWorker
 from core.leras import nn
 from DFLIMG import *
 from facelib import LandmarksProcessor
 
 
-class BlurEstimatorSubprocessor(Subprocessor):
-    class Cli(Subprocessor.Cli):
-        def on_initialize(self, client_dict):
-            self.estimate_motion_blur = client_dict['estimate_motion_blur']
-        
-        #override
-        def process_data(self, data):
-            filepath = Path( data[0] )
-            dflimg = DFLIMG.load (filepath)
+def get_face_blur(path, estimate_motion_blur=False):
+    filepath = Path(path)
+    dflimg = DFLIMG.load(filepath)
 
-            if dflimg is None or not dflimg.has_data():
-                self.log_err (f"{filepath.name} is not a dfl image file")
-                return [ str(filepath), 0 ]
-            else:
-                image = cv2_imread( str(filepath) )
-                
-                face_mask = LandmarksProcessor.get_image_hull_mask (image.shape, dflimg.get_landmarks())
-                image = (image*face_mask).astype(np.uint8)
-                
-                
-                if self.estimate_motion_blur:
-                    value = cv2.Laplacian(image, cv2.CV_64F, ksize=11).var()    
-                else:
-                    value = estimate_sharpness(image)
-                
-                return [ str(filepath), value ]
-
-
-        #override
-        def get_data_name (self, data):
-            #return string identificator of your data
-            return data[0]
-
-    #override
-    def __init__(self, input_data, estimate_motion_blur=False ):
-        self.input_data = input_data
-        self.estimate_motion_blur = estimate_motion_blur
-        self.img_list = []
-        self.trash_img_list = []
-        super().__init__('BlurEstimator', BlurEstimatorSubprocessor.Cli, 60)
-
-    #override
-    def on_clients_initialized(self):
-        io.progress_bar ("", len (self.input_data))
-
-    #override
-    def on_clients_finalized(self):
-        io.progress_bar_close ()
-
-    #override
-    def process_info_generator(self):
-        cpu_count = multiprocessing.cpu_count()
-        io.log_info(f'Running on {cpu_count} CPUs')
-
-        for i in range(cpu_count):
-            yield 'CPU%d' % (i), {}, {'estimate_motion_blur':self.estimate_motion_blur}
-
-    #override
-    def get_data(self, host_dict):
-        if len (self.input_data) > 0:
-            return self.input_data.pop(0)
-
-        return None
-
-    #override
-    def on_data_return (self, host_dict, data):
-        self.input_data.insert(0, data)
-
-    #override
-    def on_result (self, host_dict, data, result):
-        if result[1] == 0:
-            self.trash_img_list.append ( result )
+    if dflimg is None or not dflimg.has_data():
+        io.log_err(f"{filepath.name} is not a dfl image file")
+        return [False, [str(filepath), 0]]
+    else:
+        image = cv2_imread(str(filepath))
+        face_mask = LandmarksProcessor.get_image_hull_mask(image.shape, dflimg.get_landmarks())
+        image = (image * face_mask).astype(np.uint8)
+        if estimate_motion_blur:
+            value = cv2.Laplacian(image, cv2.CV_64F, ksize=11).var()
         else:
-            self.img_list.append ( result )
+            value = estimate_sharpness(image)
 
-        io.progress_bar_inc(1)
+        return [True, [str(filepath), value]]
 
-    #override
-    def get_result(self):
-        return self.img_list, self.trash_img_list
-
-
-def sort_by_blur(input_path):
+def sort_by_blur(worker, input_path):
     io.log_info ("Sorting by blur...")
-
-    img_list = [ (filename,[]) for filename in pathex.get_image_paths(input_path) ]
-    img_list, trash_img_list = BlurEstimatorSubprocessor (img_list).run()
+    worker.set_progress_bar("Loading")
+    result_processed, result_error = worker.run_sorting(get_face_blur, pathex.get_image_paths(input_path))
 
     io.log_info ("Sorting...")
-    img_list = sorted(img_list, key=operator.itemgetter(1), reverse=True)
+    result_processed = sorted(result_processed, key=operator.itemgetter(1), reverse=True)
+    return result_processed, result_error
 
-    return img_list, trash_img_list
-    
-def sort_by_motion_blur(input_path):
+def sort_by_motion_blur(worker, input_path):
     io.log_info ("Sorting by motion blur...")
-
-    img_list = [ (filename,[]) for filename in pathex.get_image_paths(input_path) ]
-    img_list, trash_img_list = BlurEstimatorSubprocessor (img_list, estimate_motion_blur=True).run()
+    worker.set_progress_bar("Loading")
+    result_processed, result_error = worker.run_sorting(get_face_blur, pathex.get_image_paths(input_path), True)
 
     io.log_info ("Sorting...")
-    img_list = sorted(img_list, key=operator.itemgetter(1), reverse=True)
+    result_processed = sorted(result_processed, key=operator.itemgetter(1), reverse=True)
+    return result_processed, result_error
 
-    return img_list, trash_img_list
-    
-def sort_by_face_yaw(input_path):
+def get_face_yaw(path):
+    filepath = Path(path)
+    dflimg = DFLIMG.load(filepath)
+    if dflimg is None or not dflimg.has_data():
+        io.log_err(f"{filepath.name} is not a dfl image file")
+        return [False, [str(filepath)]]
+
+    pitch, yaw, roll = LandmarksProcessor.estimate_pitch_yaw_roll(dflimg.get_landmarks(), size=dflimg.get_shape()[1])
+    return [True, [str(filepath), yaw]]
+
+def sort_by_face_yaw(worker, input_path):
     io.log_info ("Sorting by face yaw...")
-    img_list = []
-    trash_img_list = []
-    for filepath in io.progress_bar_generator( pathex.get_image_paths(input_path), "Loading"):
-        filepath = Path(filepath)
-
-        dflimg = DFLIMG.load (filepath)
-
-        if dflimg is None or not dflimg.has_data():
-            io.log_err (f"{filepath.name} is not a dfl image file")
-            trash_img_list.append ( [str(filepath)] )
-            continue
-
-        pitch, yaw, roll = LandmarksProcessor.estimate_pitch_yaw_roll ( dflimg.get_landmarks(), size=dflimg.get_shape()[1] )
-
-        img_list.append( [str(filepath), yaw ] )
+    worker.set_progress_bar("Loading")
+    result_processed, result_error = worker.run_sorting(get_face_yaw, pathex.get_image_paths(input_path))
 
     io.log_info ("Sorting...")
-    img_list = sorted(img_list, key=operator.itemgetter(1), reverse=True)
+    result_processed = sorted(result_processed, key=operator.itemgetter(1), reverse=True)
+    return result_processed, result_error
 
-    return img_list, trash_img_list
+def get_face_pitch(path):
+    filepath = Path(path)
+    dflimg = DFLIMG.load(filepath)
+    if dflimg is None or not dflimg.has_data():
+        io.log_err(f"{filepath.name} is not a dfl image file")
+        return [False, [str(filepath)]]
 
-def sort_by_face_pitch(input_path):
+    pitch, yaw, roll = LandmarksProcessor.estimate_pitch_yaw_roll(dflimg.get_landmarks(), size=dflimg.get_shape()[1])
+    return [True, [str(filepath), pitch]]
+
+def sort_by_face_pitch(worker, input_path):
     io.log_info ("Sorting by face pitch...")
-    img_list = []
-    trash_img_list = []
-    for filepath in io.progress_bar_generator( pathex.get_image_paths(input_path), "Loading"):
-        filepath = Path(filepath)
-
-        dflimg = DFLIMG.load (filepath)
-
-        if dflimg is None or not dflimg.has_data():
-            io.log_err (f"{filepath.name} is not a dfl image file")
-            trash_img_list.append ( [str(filepath)] )
-            continue
-
-        pitch, yaw, roll = LandmarksProcessor.estimate_pitch_yaw_roll ( dflimg.get_landmarks(), size=dflimg.get_shape()[1] )
-
-        img_list.append( [str(filepath), pitch ] )
+    worker, worker.set_progress_bar("Loading")
+    result_processed, result_error = worker.run_sorting(get_face_pitch, pathex.get_image_paths(input_path))
 
     io.log_info ("Sorting...")
-    img_list = sorted(img_list, key=operator.itemgetter(1), reverse=True)
+    result_processed = sorted(result_processed, key=operator.itemgetter(1), reverse=True)
+    return result_processed, result_error
 
-    return img_list, trash_img_list
+def get_face_rect_size(path):
+    filepath = Path(path)
+    dflimg = DFLIMG.load(filepath)
 
-def sort_by_face_source_rect_size(input_path):
+    if dflimg is None or not dflimg.has_data():
+        io.log_err(f"{filepath.name} is not a dfl image file")
+        return [False, [str(filepath)]]
+
+    source_rect = dflimg.get_source_rect()
+    rect_area = mathlib.polygon_area(np.array(source_rect[[0, 2, 2, 0]]).astype(np.float32),
+                                     np.array(source_rect[[1, 1, 3, 3]]).astype(np.float32))
+
+    return [True, [str(filepath), rect_area]]
+
+def sort_by_face_source_rect_size(worker, input_path):
     io.log_info ("Sorting by face rect size...")
-    img_list = []
-    trash_img_list = []
-    for filepath in io.progress_bar_generator( pathex.get_image_paths(input_path), "Loading"):
-        filepath = Path(filepath)
-
-        dflimg = DFLIMG.load (filepath)
-
-        if dflimg is None or not dflimg.has_data():
-            io.log_err (f"{filepath.name} is not a dfl image file")
-            trash_img_list.append ( [str(filepath)] )
-            continue
-
-        source_rect = dflimg.get_source_rect()
-        rect_area = mathlib.polygon_area(np.array(source_rect[[0,2,2,0]]).astype(np.float32), np.array(source_rect[[1,1,3,3]]).astype(np.float32))
-
-        img_list.append( [str(filepath), rect_area ] )
+    worker.set_progress_bar("Loading")
+    result_processed, result_error = worker.run_sorting(get_face_rect_size, pathex.get_image_paths(input_path))
 
     io.log_info ("Sorting...")
-    img_list = sorted(img_list, key=operator.itemgetter(1), reverse=True)
+    result_processed = sorted(result_processed, key=operator.itemgetter(1), reverse=True)
+    return result_processed, result_error
 
-    return img_list, trash_img_list
+def get_image_histogram(path):
+    img = cv2_imread(path)
+    return [path,
+            cv2.calcHist([img], [0], None, [256], [0, 256]),
+            cv2.calcHist([img], [1], None, [256], [0, 256]),
+            cv2.calcHist([img], [2], None, [256], [0, 256])]
 
+def find_min_hist_score(img_list, start_index):
+    img = img_list[start_index]
+    min_score_index = start_index + 1
+    min_score = float("inf")
+    for j in range(start_index + 1, len(img_list)):
+        other_img = img_list[j]
+        score = compare_histograms(img, other_img)
+        if score < min_score:
+            min_score = score
+            min_score_index = j
+    return min_score_index
+
+def compare_histograms(img, other_img):
+    return cv2.compareHist(img[1], other_img[1], cv2.HISTCMP_BHATTACHARYYA) + \
+           cv2.compareHist(img[2], other_img[2], cv2.HISTCMP_BHATTACHARYYA) + \
+           cv2.compareHist(img[3], other_img[3], cv2.HISTCMP_BHATTACHARYYA)
 
 
 class HistSsimSubprocessor(Subprocessor):
     class Cli(Subprocessor.Cli):
         #override
-        def process_data(self, data):
-            img_list = []
-            for x in data:
-                img = cv2_imread(x)
-                img_list.append ([x, cv2.calcHist([img], [0], None, [256], [0, 256]),
-                                     cv2.calcHist([img], [1], None, [256], [0, 256]),
-                                     cv2.calcHist([img], [2], None, [256], [0, 256])
-                                 ])
-
+        def process_data(self, img_list):
             img_list_len = len(img_list)
             for i in range(img_list_len-1):
-                min_score = float("inf")
-                j_min_score = i+1
-                for j in range(i+1,len(img_list)):
-                    score = cv2.compareHist(img_list[i][1], img_list[j][1], cv2.HISTCMP_BHATTACHARYYA) + \
-                            cv2.compareHist(img_list[i][2], img_list[j][2], cv2.HISTCMP_BHATTACHARYYA) + \
-                            cv2.compareHist(img_list[i][3], img_list[j][3], cv2.HISTCMP_BHATTACHARYYA)
-                    if score < min_score:
-                        min_score = score
-                        j_min_score = j
-                img_list[i+1], img_list[j_min_score] = img_list[j_min_score], img_list[i+1]
-
+                min_score_index = find_min_hist_score(img_list, i)
+                img_list[i+1], img_list[min_score_index] = img_list[min_score_index], img_list[i+1]
                 self.progress_bar_inc(1)
 
             return img_list
@@ -231,7 +162,7 @@ class HistSsimSubprocessor(Subprocessor):
             return "Bunch of images"
 
     #override
-    def __init__(self, img_list ):
+    def __init__(self, img_list):
         self.img_list = img_list
         self.img_list_len = len(img_list)
 
@@ -243,8 +174,8 @@ class HistSsimSubprocessor(Subprocessor):
             slice_count = int(self.img_list_len / sliced_count)
             sliced_count = self.img_list_len // slice_count
 
-        self.img_chunks_list = [ self.img_list[i*slice_count : (i+1)*slice_count] for i in range(sliced_count) ] + \
-                               [ self.img_list[sliced_count*slice_count:] ]
+        self.img_chunks_list = [self.img_list[i*slice_count: (i+1)*slice_count] for i in range(sliced_count)] + \
+                               [self.img_list[sliced_count*slice_count:]]
 
         self.result = []
         super().__init__('HistSsim', HistSsimSubprocessor.Cli, 0)
@@ -284,150 +215,207 @@ class HistSsimSubprocessor(Subprocessor):
     def get_result(self):
         return self.result
 
-def sort_by_hist(input_path):
+class HistSsimSorter:
+    ALLOWED_DIFF = 1.2
+    SLICE_COUNT = 10000
+
+    def __init__(self, worker, hist_list):
+        self.worker = worker
+        self.hist_list = hist_list
+
+    @staticmethod
+    def sort_histogram_classic(img_list):
+        img_list_len = len(img_list)
+        i = 0
+        while i < img_list_len - 1:
+            min_score_index = find_min_hist_score(img_list, i)
+            img_list[i + 1], img_list[min_score_index] = img_list[min_score_index], img_list[i + 1]
+            i += 1
+
+        return img_list
+
+    def sort_chunk(self, img_list):
+        groups_list = [[img_list[0]]]
+        img_list_len = len(img_list)
+
+        i = 1
+        while i < img_list_len:
+            img = img_list[i]
+            group_index = -1
+            min_diff = float("inf")
+            for j in range(len(groups_list)):
+                first_img = groups_list[j][0]
+                diff_to_first = compare_histograms(first_img, img)
+
+                if diff_to_first < HistSsimSorter.ALLOWED_DIFF and diff_to_first < min_diff:
+                    min_diff = diff_to_first
+                    group_index = j
+
+            if group_index == -1:
+                groups_list.append([img])
+                print(f"Gathering image groups: {len(groups_list)}", end="\r")
+            else:
+                groups_list[group_index].append(img)
+            i += 1
+
+        i = 0
+        joined_small_groups = []
+        while i < len(groups_list):
+            group = groups_list[i]
+            if len(group) / img_list_len < 0.01:
+                joined_small_groups += group
+                groups_list.pop(i)
+                continue
+            i += 1
+        groups_list.insert(0, joined_small_groups)
+        groups_list.sort(key=lambda x: len(x), reverse=True)
+
+        self.worker.set_progress_bar("Sorting")
+        sorted_reference_list = self.worker.run(HistSsimSorter.sort_histogram_classic, groups_list)
+
+        i = 0
+        while i < len(sorted_reference_list):
+            min_score_index = find_min_hist_score(img_list, i)
+            img_list[i + 1], img_list[min_score_index] = img_list[min_score_index], img_list[i + 1]
+            i += 1
+
+        result = []
+        for group in sorted_reference_list:
+            result += group
+
+        return result
+
+    def fast_sort(self):
+        slice_count = HistSsimSorter.SLICE_COUNT
+        chunks_fraction = math.modf(len(self.hist_list) / slice_count)
+        sliced_count = int(chunks_fraction[1])
+        if chunks_fraction[0] < 0.3:    # slice 22k to 11k + 11k instead of 10k + 10k + 2k
+            sliced_count -= 1
+
+        hist_chunks_list = [self.hist_list[i * slice_count: (i + 1) * slice_count] for i in range(sliced_count)] + \
+                          [self.hist_list[sliced_count * slice_count:]]
+
+        result = []
+        for i in range(len(hist_chunks_list)):
+            print(f"Sorting chunk {i + 1} of {len(hist_chunks_list)}")
+            result += self.sort_chunk(hist_chunks_list[i])
+        return result
+
+
+def sort_by_hist(worker, input_path):
+    is_fast_mode = io.input_bool ("Use alternative sorting method?", False, help_message="There will be a decrease in accuracy and an increase in speed.")
+
     io.log_info ("Sorting by histogram similarity...")
-    img_list = HistSsimSubprocessor(pathex.get_image_paths(input_path)).run()
+    worker.set_progress_bar("Loading histograms")
+    hist_list = worker.run(get_image_histogram, pathex.get_image_paths(input_path))
+    if is_fast_mode:
+        img_list = HistSsimSorter(worker, hist_list).fast_sort()
+    else:
+        img_list = HistSsimSubprocessor(hist_list).run()
+
     return img_list, []
 
-class HistDissimSubprocessor(Subprocessor):
-    class Cli(Subprocessor.Cli):
-        #override
-        def on_initialize(self, client_dict):
-            self.img_list = client_dict['img_list']
-            self.img_list_len = len(self.img_list)
+def get_face_simple_histogram(path):
+    filepath = Path(path)
+    dflimg = DFLIMG.load(filepath)
+    image = cv2_imread(str(filepath))
+    if dflimg is not None and dflimg.has_data():
+        face_mask = LandmarksProcessor.get_image_hull_mask(image.shape, dflimg.get_landmarks())
+        image = (image * face_mask).astype(np.uint8)
 
-        #override
-        def process_data(self, data):
-            i = data[0]
-            score_total = 0
-            for j in range( 0, self.img_list_len):
-                if i == j:
-                    continue
-                score_total += cv2.compareHist(self.img_list[i][1], self.img_list[j][1], cv2.HISTCMP_BHATTACHARYYA)
+    return [str(filepath), cv2.calcHist([cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)], [0], None, [256], [0, 256]), 0]
 
-            return score_total
+def calc_face_histogram_difference(job):
+    chunk, data_list = job
+    for data in chunk:
+        current_histogram = data[1]
+        score_total = 0
+        for other_data in data_list:
+            score_total += cv2.compareHist(current_histogram, other_data[1], cv2.HISTCMP_BHATTACHARYYA)
+        data[2] = score_total
 
-        #override
-        def get_data_name (self, data):
-            #return string identificator of your data
-            return self.img_list[data[0]][0]
+    return chunk
 
-    #override
-    def __init__(self, img_list ):
-        self.img_list = img_list
-        self.img_list_range = [i for i in range(0, len(img_list) )]
-        self.result = []
-        super().__init__('HistDissim', HistDissimSubprocessor.Cli, 60)
-
-    #override
-    def on_clients_initialized(self):
-        io.progress_bar ("Sorting", len (self.img_list) )
-
-    #override
-    def on_clients_finalized(self):
-        io.progress_bar_close()
-
-    #override
-    def process_info_generator(self):
-        cpu_count = min(multiprocessing.cpu_count(), 8)
-        io.log_info(f'Running on {cpu_count} CPUs')
-        for i in range(cpu_count):
-            yield 'CPU%d' % (i), {}, {'img_list' : self.img_list}
-
-    #override
-    def get_data(self, host_dict):
-        if len (self.img_list_range) > 0:
-            return [self.img_list_range.pop(0)]
-
-        return None
-
-    #override
-    def on_data_return (self, host_dict, data):
-        self.img_list_range.insert(0, data[0])
-
-    #override
-    def on_result (self, host_dict, data, result):
-        self.img_list[data[0]][2] = result
-        io.progress_bar_inc(1)
-
-    #override
-    def get_result(self):
-        return self.img_list
-
-def sort_by_hist_dissim(input_path):
+def sort_by_hist_dissim(worker, input_path):
     io.log_info ("Sorting by histogram dissimilarity...")
+    worker.set_progress_bar("Loading")
+    img_list = worker.run(get_face_simple_histogram, pathex.get_image_paths(input_path))
 
+    worker.set_progress_bar("Sorting")
+    chunk_length = 100
+    chunk_start = 0
+    jobs = []
+    while chunk_start < len(img_list):
+        chunk_end = min(chunk_start + chunk_length, len(img_list))
+        jobs.append((img_list[chunk_start:chunk_end], img_list))
+        chunk_start = chunk_end
+
+    chunks = worker.run(calc_face_histogram_difference, jobs)
     img_list = []
-    trash_img_list = []
-    for filepath in io.progress_bar_generator( pathex.get_image_paths(input_path), "Loading"):
-        filepath = Path(filepath)
+    for chunk in chunks:
+        img_list += chunk
 
-        dflimg = DFLIMG.load (filepath)
-
-        image = cv2_imread(str(filepath))
-
-        if dflimg is not None and dflimg.has_data():
-            face_mask = LandmarksProcessor.get_image_hull_mask (image.shape, dflimg.get_landmarks())
-            image = (image*face_mask).astype(np.uint8)
-
-        img_list.append ([str(filepath), cv2.calcHist([cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)], [0], None, [256], [0, 256]), 0 ])
-
-    img_list = HistDissimSubprocessor(img_list).run()
-
-    io.log_info ("Sorting...")
     img_list = sorted(img_list, key=operator.itemgetter(2), reverse=True)
+    return img_list, []
 
-    return img_list, trash_img_list
+def get_face_brightness(path):
+    brightness = np.mean(cv2.cvtColor(cv2_imread(path), cv2.COLOR_BGR2HSV)[..., 2].flatten())
+    return [path, brightness]
 
-def sort_by_brightness(input_path):
+def sort_by_brightness(worker, input_path):
     io.log_info ("Sorting by brightness...")
-    img_list = [ [x, np.mean ( cv2.cvtColor(cv2_imread(x), cv2.COLOR_BGR2HSV)[...,2].flatten()  )] for x in io.progress_bar_generator( pathex.get_image_paths(input_path), "Loading") ]
+    worker.set_progress_bar("Loading")
+    img_list = worker.run(get_face_brightness, pathex.get_image_paths(input_path))
     io.log_info ("Sorting...")
     img_list = sorted(img_list, key=operator.itemgetter(1), reverse=True)
     return img_list, []
 
-def sort_by_hue(input_path):
+def get_face_hue(path):
+    hue = np.mean(cv2.cvtColor(cv2_imread(path), cv2.COLOR_BGR2HSV)[..., 0].flatten())
+    return [path, hue]
+
+def sort_by_hue(worker, input_path):
     io.log_info ("Sorting by hue...")
-    img_list = [ [x, np.mean ( cv2.cvtColor(cv2_imread(x), cv2.COLOR_BGR2HSV)[...,0].flatten()  )] for x in io.progress_bar_generator( pathex.get_image_paths(input_path), "Loading") ]
+    worker.set_progress_bar("Loading")
+    img_list = worker.run(get_face_hue, pathex.get_image_paths(input_path))
+
     io.log_info ("Sorting...")
     img_list = sorted(img_list, key=operator.itemgetter(1), reverse=True)
     return img_list, []
 
-def sort_by_black(input_path):
-    io.log_info ("Sorting by amount of black pixels...")
+def get_face_black_pixels_count(path):
+    img = cv2_imread(path)
+    return [path, img[(img == 0)].size]
 
-    img_list = []
-    for x in io.progress_bar_generator( pathex.get_image_paths(input_path), "Loading"):
-        img = cv2_imread(x)
-        img_list.append ([x, img[(img == 0)].size ])
+def sort_by_black(worker, input_path):
+    io.log_info("Sorting by amount of black pixels...")
+    worker.set_progress_bar("Loading")
+    img_list = worker.run(get_face_black_pixels_count, pathex.get_image_paths(input_path))
 
-    io.log_info ("Sorting...")
+    io.log_info("Sorting...")
     img_list = sorted(img_list, key=operator.itemgetter(1), reverse=False)
-
     return img_list, []
 
-def sort_by_origname(input_path):
+def parse_face_original_name(path):
+    filepath = Path(path)
+    dflimg = DFLIMG.load(filepath)
+
+    if dflimg is None or not dflimg.has_data():
+        io.log_err(f"{filepath.name} is not a dfl image file")
+        return False, [str(filepath)]
+
+    return True, [str(filepath), dflimg.get_source_filename()]
+
+def sort_by_origname(worker, input_path):
     io.log_info ("Sort by original filename...")
-
-    img_list = []
-    trash_img_list = []
-    for filepath in io.progress_bar_generator( pathex.get_image_paths(input_path), "Loading"):
-        filepath = Path(filepath)
-
-        dflimg = DFLIMG.load (filepath)
-
-        if dflimg is None or not dflimg.has_data():
-            io.log_err (f"{filepath.name} is not a dfl image file")
-            trash_img_list.append( [str(filepath)] )
-            continue
-
-        img_list.append( [str(filepath), dflimg.get_source_filename()] )
+    worker.set_progress_bar("Loading")
+    result_processed, result_error = worker.run_sorting(parse_face_original_name, pathex.get_image_paths(input_path))
 
     io.log_info ("Sorting...")
-    img_list = sorted(img_list, key=operator.itemgetter(1))
-    return img_list, trash_img_list
+    result_processed = sorted(result_processed, key=operator.itemgetter(1))
+    return result_processed, result_error
 
-def sort_by_oneface_in_image(input_path):
+def sort_by_oneface_in_image(worker, input_path):
     io.log_info ("Sort by one face in images...")
     image_paths = pathex.get_image_paths(input_path)
     a = np.array ([ ( int(x[0]), int(x[1]) ) \
@@ -445,98 +433,6 @@ def sort_by_oneface_in_image(input_path):
 
     io.log_info ("Nothing found. Possible recover original filenames first.")
     return [], []
-
-class FinalLoaderSubprocessor(Subprocessor):
-    class Cli(Subprocessor.Cli):
-        #override
-        def on_initialize(self, client_dict):
-            self.faster = client_dict['faster']
-
-        #override
-        def process_data(self, data):
-            filepath = Path(data[0])
-
-            try:
-                dflimg = DFLIMG.load (filepath)
-
-                if dflimg is None or not dflimg.has_data():
-                    self.log_err (f"{filepath.name} is not a dfl image file")
-                    return [ 1, [str(filepath)] ]
-
-                bgr = cv2_imread(str(filepath))
-                if bgr is None:
-                    raise Exception ("Unable to load %s" % (filepath.name) )
-
-                gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-                if self.faster:
-                    source_rect = dflimg.get_source_rect()
-                    sharpness = mathlib.polygon_area(np.array(source_rect[[0,2,2,0]]).astype(np.float32), np.array(source_rect[[1,1,3,3]]).astype(np.float32))
-                else:
-                    face_mask = LandmarksProcessor.get_image_hull_mask (gray.shape, dflimg.get_landmarks())     
-                    sharpness = estimate_sharpness( (gray[...,None]*face_mask).astype(np.uint8) )
-
-                pitch, yaw, roll = LandmarksProcessor.estimate_pitch_yaw_roll ( dflimg.get_landmarks(), size=dflimg.get_shape()[1] )
-
-                hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
-            except Exception as e:
-                self.log_err (e)
-                return [ 1, [str(filepath)] ]
-
-            return [ 0, [str(filepath), sharpness, hist, yaw, pitch ] ]
-
-        #override
-        def get_data_name (self, data):
-            #return string identificator of your data
-            return data[0]
-
-    #override
-    def __init__(self, img_list, faster ):
-        self.img_list = img_list
-
-        self.faster = faster
-        self.result = []
-        self.result_trash = []
-
-        super().__init__('FinalLoader', FinalLoaderSubprocessor.Cli, 60)
-
-    #override
-    def on_clients_initialized(self):
-        io.progress_bar ("Loading", len (self.img_list))
-
-    #override
-    def on_clients_finalized(self):
-        io.progress_bar_close()
-
-    #override
-    def process_info_generator(self):
-        cpu_count = min(multiprocessing.cpu_count(), 8)
-        io.log_info(f'Running on {cpu_count} CPUs')
-
-        for i in range(cpu_count):
-            yield 'CPU%d' % (i), {}, {'faster': self.faster}
-
-    #override
-    def get_data(self, host_dict):
-        if len (self.img_list) > 0:
-            return [self.img_list.pop(0)]
-
-        return None
-
-    #override
-    def on_data_return (self, host_dict, data):
-        self.img_list.insert(0, data[0])
-
-    #override
-    def on_result (self, host_dict, data, result):
-        if result[0] == 0:
-            self.result.append (result[1])
-        else:
-            self.result_trash.append (result[1])
-        io.progress_bar_inc(1)
-
-    #override
-    def get_result(self):
-        return self.result, self.result_trash
 
 class FinalHistDissimSubprocessor(Subprocessor):
     class Cli(Subprocessor.Cli):
@@ -610,17 +506,50 @@ class FinalHistDissimSubprocessor(Subprocessor):
     def get_result(self):
         return self.result
 
-def sort_best_faster(input_path):
-    return sort_best(input_path, faster=True)
 
-def sort_best(input_path, faster=False):
+def get_face_metrics(path, fast_mode):
+    filepath = Path(path)
+    try:
+        dflimg = DFLIMG.load(filepath)
+        if dflimg is None or not dflimg.has_data():
+            io.log_err(f"{filepath.name} is not a dfl image file")
+            return [False, [str(filepath)]]
+
+        bgr = cv2_imread(str(filepath))
+        if bgr is None:
+            raise Exception("Unable to load %s" % (filepath.name))
+
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        if fast_mode:
+            source_rect = dflimg.get_source_rect()
+            sharpness = mathlib.polygon_area(np.array(source_rect[[0, 2, 2, 0]]).astype(np.float32),
+                                             np.array(source_rect[[1, 1, 3, 3]]).astype(np.float32))
+        else:
+            face_mask = LandmarksProcessor.get_image_hull_mask(gray.shape, dflimg.get_landmarks())
+            sharpness = estimate_sharpness((gray[..., None] * face_mask).astype(np.uint8))
+
+        pitch, yaw, roll = LandmarksProcessor.estimate_pitch_yaw_roll(dflimg.get_landmarks(),
+                                                                      size=dflimg.get_shape()[1])
+
+        hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
+    except Exception as e:
+        io.log_err(e)
+        return [False, [str(filepath)]]
+
+    return [True, [str(filepath), sharpness, hist, yaw, pitch]]
+
+def sort_best_faster(worker, input_path):
+    return sort_best(worker, input_path, faster=True)
+
+def sort_best(worker, input_path, faster=False):
     target_count = io.input_int ("Target number of faces?", 2000)
 
     io.log_info ("Performing sort by best faces.")
     if faster:
         io.log_info("Using faster algorithm. Faces will be sorted by source-rect-area instead of blur.")
 
-    img_list, trash_img_list = FinalLoaderSubprocessor( pathex.get_image_paths(input_path), faster ).run()
+    worker.set_progress_bar("Loading")
+    img_list, trash_img_list = worker.run_sorting(get_face_metrics, pathex.get_image_paths(input_path), faster)
     final_img_list = []
 
     grads = 128
@@ -732,7 +661,7 @@ def sort_best(input_path, faster=False):
     return final_img_list, trash_img_list
 
 """
-def sort_by_vggface(input_path):
+def sort_by_vggface(worker, input_path):
     io.log_info ("Sorting by face similarity using VGGFace model...")
 
     model = VGGFace()
@@ -772,7 +701,7 @@ def sort_by_vggface(input_path):
     return img_list, trash_img_list
 """
 
-def sort_by_absdiff(input_path):
+def sort_by_absdiff(worker, input_path):
     io.log_info ("Sorting by absolute difference...")
 
     is_sim = io.input_bool ("Sort by similar?", True, help_message="Otherwise sort by dissimilar.")
@@ -856,13 +785,21 @@ def sort_by_absdiff(input_path):
     img_list = [ (image_paths[x],) for x in sorted]
     return img_list, []
 
-def final_process(input_path, img_list, trash_img_list):
+def rename(chunk):
+    for data in chunk:
+        src, dst = data
+        try:
+            src.rename(dst)
+        except:
+            io.log_info('fail to rename %s' % src.name)
+
+def final_process(worker, input_path, img_list, trash_img_list):
     if len(trash_img_list) != 0:
         parent_input_path = input_path.parent
         trash_path = parent_input_path / (input_path.stem + '_trash')
         trash_path.mkdir (exist_ok=True)
 
-        io.log_info ("Trashing %d items to %s" % ( len(trash_img_list), str(trash_path) ) )
+        io.log_info("Trashing %d items to %s" % (len(trash_img_list), str(trash_path)))
 
         for filename in pathex.get_image_paths(trash_path):
             Path(filename).unlink()
@@ -873,27 +810,42 @@ def final_process(input_path, img_list, trash_img_list):
             try:
                 src.rename (dst)
             except:
-                io.log_info ('fail to trashing %s' % (src.name) )
+                io.log_info('fail to trashing %s' % src.name)
 
-        io.log_info ("")
+        io.log_info("")
 
     if len(img_list) != 0:
-        for i in io.progress_bar_generator( [*range(len(img_list))], "Renaming", leave=False):
+        tmp_list = []
+        for i in range(len(img_list)):
             src = Path (img_list[i][0])
-            dst = input_path / ('%.5d_%s' % (i, src.name ))
-            try:
-                src.rename (dst)
-            except:
-                io.log_info ('fail to rename %s' % (src.name) )
+            dst = input_path / ('%.5d_%s' % (i, src.name))
+            tmp_list.append((src, dst))
 
-        for i in io.progress_bar_generator( [*range(len(img_list))], "Renaming"):
-            src = Path (img_list[i][0])
+        chunk_length = 1000
+        chunk_start = 0
+        jobs = []
+        while chunk_start < len(tmp_list):
+            chunk_end = min(chunk_start + chunk_length, len(tmp_list))
+            jobs.append((tmp_list[chunk_start:chunk_end]))
+            chunk_start = chunk_end
+        io.log_info("Renaming...")
+        worker.run(rename, jobs)
+
+        tmp_list = []
+        for i in range(len(img_list)):
+            src = Path(img_list[i][0])
             src = input_path / ('%.5d_%s' % (i, src.name))
             dst = input_path / ('%.5d%s' % (i, src.suffix))
-            try:
-                src.rename (dst)
-            except:
-                io.log_info ('fail to rename %s' % (src.name) )
+            tmp_list.append((src, dst))
+
+        chunk_length = 1000
+        chunk_start = 0
+        jobs = []
+        while chunk_start < len(tmp_list):
+            chunk_end = min(chunk_start + chunk_length, len(tmp_list))
+            jobs.append((tmp_list[chunk_start:chunk_end]))
+            chunk_start = chunk_end
+        worker.run(rename, jobs)
 
 sort_func_methods = {
     'blur':        ("blur", sort_by_blur),
@@ -931,7 +883,9 @@ def main (input_path, sort_by_method=None):
     else:
         sort_by_method = sort_by_method.lower()
 
+    worker = MultiprocessWorker(preserve_pool=True)
     desc, func = sort_func_methods[sort_by_method]
-    img_list, trash_img_list = func(input_path)
+    img_list, trash_img_list = func(worker, input_path)
 
-    final_process (input_path, img_list, trash_img_list)
+    final_process (worker, input_path, img_list, trash_img_list)
+    worker.close_pool()
