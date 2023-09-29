@@ -28,7 +28,7 @@
 ### Extraction (step 4 and 5)
 Estimated speedup: **1.52х**  
 
-Parameters:
+Measured on:
 - 2000 pictures (HD 1280x720, 1k with faces, 1k without faces)
 - detector s3fd
 - image-size 320
@@ -54,7 +54,7 @@ Parameters:
 - Best faces: **9.88x**
 - Best faces faster: **4.01x**
 
-Parameters:
+Measured on:
 - 10000 images 320x320
 
 
@@ -67,10 +67,10 @@ Small decrease in iteration time. I got this: -10ms (~4%) on the DF 160 model.
 - Prepare: **8.22x**
 - Merge: **1.13x**
 
-Parameters:
+Measured on:
 - 2000 pictures (HD 1280x720, 1k with faces, 1k skip without faces)
 - Saving results in jpg format (in my version)
-- Number of streams = number of virtual streams + 1
+- Number of threads = number of virtual threads + 1
 
 ### Joining (step 8)
 Depends on codec: h264, h265 and its versions accelerated with video card
