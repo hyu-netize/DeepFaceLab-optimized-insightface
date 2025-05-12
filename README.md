@@ -38,7 +38,6 @@ Estimated speedup: **4.80x** 😊
 
 Measured on:
 - 1619 pictures (HD 1280x720)
-- detector s3fd
 - image-size 512
 - jpeg-quality 90
 - output-debug
