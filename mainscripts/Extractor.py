@@ -73,7 +73,7 @@ class ExtractSubprocessor(Subprocessor):
             self.log_info (f"Running on {client_dict['device_name'] }")
 
             if self.type == 'all' or self.type == 'rects-s3fd' or 'landmarks' in self.type:
-                self.rects_extractor = facelib.S3FDExtractor(place_model_on_cpu=place_model_on_cpu)
+                self.rects_extractor = facelib.InsightFaceExtractor(place_model_on_cpu=place_model_on_cpu)
 
             if self.type == 'all' or 'landmarks' in self.type:
                 # for head type, extract "3D landmarks"
@@ -752,7 +752,7 @@ class ExtractThreadedProcessor(object):
         self.output_debug_path = output_debug_path
         self.final_output_path = final_output_path
         self.max_faces_from_image = max_faces_from_image
-        self.thread_pool = ThreadPool(processes=int(multiprocessing.cpu_count() * 1.5))
+        self.thread_pool = ThreadPool(processes=min(4 ,int(multiprocessing.cpu_count() * 1.5)))
 
         self.devices = ExtractSubprocessor.get_devices_for_config(self.type, device_config)
 
@@ -767,7 +767,7 @@ class ExtractThreadedProcessor(object):
 
         nn.initialize (device_config)
 
-        self.rects_extractor = facelib.S3FDExtractor(place_model_on_cpu=place_model_on_cpu)
+        self.rects_extractor = facelib.InsightFaceExtractor(place_model_on_cpu=place_model_on_cpu)
         self.landmarks_extractor = facelib.FANExtractor(landmarks_3D=self.face_type >= FaceType.HEAD,
                                                         place_model_on_cpu=place_model_on_cpu)
 
